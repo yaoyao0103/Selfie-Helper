@@ -3,6 +3,7 @@ import sys,os
 import numpy as np
 import cv2
 import json
+import time
 from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtGui import QImage,QIcon,QPixmap
 from PyQt5.QtWidgets import QFileDialog,QMessageBox
@@ -10,7 +11,6 @@ from AIMakeup import Makeup,Face,Organ,NoFace
 
 # modules of models
 import tensorflow as tf
-import matplotlib.pyplot as plt
 from queue import Queue
 from cvzone.HandTrackingModule import HandDetector
 from cvzone.PoseModule import PoseDetector
@@ -18,16 +18,25 @@ import keras.backend as K
 from cvzone.SelfiSegmentationModule import SelfiSegmentation
 
 
+
 class SelfieHelper(object):
     def __init__(self, MainWindow):
         self.window=MainWindow
         # makeup values
+        self.mode = []
+        for num in range(1,6):
+            path = "./data/mode{}.json".format(str(num))
+            if os.path.exists(path):
+                with open(path, 'r') as fp:
+                    self.mode.append(json.load(fp))
         self.values = {'brightening': 0.0, 'sharpen': 0.0, 'whitening': 0.0, 'smooth': 0.0}
+
         self._setupUi()
         self.bg_edit=[]
-        self.bg_op=[self.bt_reset]
+        self.bg_op=[self.bt_reset, self.bt_saveImage]
         self.bg_result=[self.bt_save1,self.bt_save2,self.bt_save3,self.bt_save4,self.bt_save5]
         self.sls=[self.sl_brightening,self.sl_sharpen,self.sl_whitening,self.sl_smooth]
+        
         # set label on image
         self.label=QtWidgets.QLabel(self.window)
         self.sa.setWidget(self.label)
@@ -52,26 +61,28 @@ class SelfieHelper(object):
         self.handDetector = HandDetector(detectionCon=0.8)
         self.poseDetector = PoseDetector()
 
-        # use haarcascade in opencv to implement face detection
-        self.faceCascade = cv2.CascadeClassifier("haarcascade_frontalface_default.xml")
-
         # import my trained selfie detection and hand sign detection model
-        self.selfie_model = tf.keras.models.load_model('./selfie_model.h5')
-        self.hand_model = tf.keras.models.load_model('./hand_model_new.h5')
+        self.selfie_model = tf.keras.models.load_model('./models/selfie_model.h5')
+        self.hand_model = tf.keras.models.load_model('./models/hand_model.h5')
 
         # predictions
+        self.number = 'unknown'
         self.selfie_prediction = 0.0
         self.predicted_action = 'NonSelfie'
         self.body_proportion = 0.0
         self.hand_predictions = Queue(maxsize=10)
 
+        self.countdown = False
+        self.remaining = 10.0
+        self.autoStart = True
+        self.imageCount = 0
+
+    # set btn connection
     def _set_connect(self):
-        '''
-        设置程序逻辑
-        '''
         self.bt_open.clicked.connect(self._open_img)
         for op in ['reset']:
             self.__getattribute__('bt_'+op).clicked.connect(self.__getattribute__('_'+op))
+        self.bt_saveImage.clicked.connect(self._saveImage)
         self.bt_save1.clicked.connect(lambda: self._save('1'))
         self.bt_save2.clicked.connect(lambda: self._save('2'))
         self.bt_save3.clicked.connect(lambda: self._save('3'))
@@ -80,10 +91,8 @@ class SelfieHelper(object):
         self.bt_camera.clicked.connect(lambda: self._openCamera())
 
 
+    # open an image
     def _open_img(self):
-        '''
-        打開圖片
-        '''
         self.path_img,_=QFileDialog.getOpenFileName(self.centralWidget,'打開圖片文件','./','Image Files(*.png *.jpg *.bmp)')
         if self.path_img and os.path.exists(self.path_img):
             print(self.path_img)
@@ -96,44 +105,35 @@ class SelfieHelper(object):
             self._set_img()
         else:
             QMessageBox.warning(self.centralWidget,'無效路徑','無效路徑，請重新選擇！')
-            
+
+    # opencv image to QImage    
     def _cv2qimg(self,cvImg):
-        '''
-        將opencv的圖片轉換為QImage
-        '''
-        print(cvImg)
         height, width, channel = cvImg.shape
         bytesPerLine = 3 * width
         return QImage(cv2.cvtColor(cvImg,cv2.COLOR_BGR2RGB).data, width, height, bytesPerLine, QImage.Format_RGB888)
         
+    # set Image
     def _set_img(self):
-        '''
-        顯示pixmap
-        '''
         self.label.setPixmap(QPixmap.fromImage(self._cv2qimg(self.temp_bgr)))
 
     def _set_statu(self,group,value):
-        '''
-        批量設置狀態
-        '''
         [item.setEnabled(value) for item in group]
-        
+
+    # reset Image    
     def _reset(self):
-        '''
-        重置為原始圖片
-        '''
         self.temp_bgr[:]=self.im_ori[:]
         self._set_img()
         
-    def _mapfaces(self,fun,value):
-        '''
-        對每張臉進行迭代操作
-        '''
-        self.previous_bgr[:]=self.temp_bgr[:]
+    # apply on all faces
+    def _mapfaces(self,fun,value,isCamera=False):
+        if isCamera == False:
+            self.previous_bgr[:]=self.temp_bgr[:]
         for face in self.faces[self.path_img]:
             fun(face,value)
-        self._set_img()
+        if isCamera == False:
+            self._set_img()
 
+    # trigger when slider change
     def _changeValue(self):
         self.values['sharpen'] = min(1,max(self.sl_sharpen.value()/200,0))
         self.values['whitening'] = min(1,max(self.sl_whitening.value()/200,0))
@@ -144,18 +144,40 @@ class SelfieHelper(object):
         self._whitening()
         self._brightening()
         self._smooth()
+
+    # apply makeup filter on camera frame
+    def _applyMakeup(self, mode):
+        self.im_bgr=self.frame
+        im_hsv=cv2.cvtColor(self.im_bgr, cv2.COLOR_BGR2HSV)
+        self.temp_bgr,temp_hsv=self.im_bgr.copy(),im_hsv.copy()
+        try:
+            self.faces = self.mu.get_faces(self.im_bgr,im_hsv,self.temp_bgr,temp_hsv,"camera")
+            self.values['sharpen'] = mode['sharpen']
+            self.values['whitening'] = mode['whitening']
+            self.values['brightening'] = mode['brightening']
+            self.values['smooth'] = mode['smooth']
+            
+            self._sharpen(True)
+            self._whitening(True)
+            self._brightening(True)
+            self._smooth(True)
+            cv2.imshow("Faces found",  self.temp_bgr)
+            
+        except:
+            print("too many face")
         
-    def _sharpen(self):
+    # makeup: sharpen
+    def _sharpen(self, isCamera = False):
         value=self.values['sharpen']
-        print(value)
         def fun(face,value):
             face.organs['left eye'].sharpen(value,confirm=False)
             face.organs['right eye'].sharpen(value,confirm=False)
-        self._mapfaces(fun,value)
-        
-    def _whitening(self):
+
+        self._mapfaces(fun,value,isCamera)
+
+    # makeup: whitening  
+    def _whitening(self, isCamera = False):
         value=self.values['whitening']
-        print(value)
         def fun(face,v):
             face.organs['left eye'].whitening(value,confirm=False)
             face.organs['right eye'].whitening(value,confirm=False)
@@ -165,16 +187,19 @@ class SelfieHelper(object):
             face.organs['forehead'].whitening(value,confirm=False)
             face.organs['mouth'].whitening(value,confirm=False)
             face.whitening(value,confirm=False)
-        self._mapfaces(fun,value)
 
-    def _brightening(self):
+        self._mapfaces(fun,value,isCamera)
+
+    # makeup: brightening  
+    def _brightening(self, isCamera = False):
         value=self.values['brightening']
-        print(value)
         def fun(face,value):
             face.organs['mouth'].brightening(value,confirm=False)
-        self._mapfaces(fun,value)
+
+        self._mapfaces(fun,value,isCamera)
         
-    def _smooth(self):
+    # makeup: smooth
+    def _smooth(self, isCamera = False):
         value=self.values['smooth']
         def fun(face,value):
             face.smooth(value,confirm=False)
@@ -185,39 +210,38 @@ class SelfieHelper(object):
             face.organs['nose'].smooth(value*2/3,confirm=False)
             face.organs['forehead'].smooth(value*3/2,confirm=False)
             face.organs['mouth'].smooth(value,confirm=False)
-        self._mapfaces(fun,value)
+        
+        self._mapfaces(fun,value, isCamera)
     
+    # save mode to json file
     def _save(self, number='1'):
         values = self.values
-        with open('./data/mode' + number + '.json', 'w+') as fp:
+        path = "./data/mode{}.json".format(number)
+        with open(path, 'w+') as fp:
             json.dump(values, fp)
+        with open(path, 'r') as fp:
+            self.mode[int(number)-1] = json.load(fp)
 
-    def _handSignPrediction(self, frame, hands):
+    # save image
+    def _saveImage(self):
+        output_path,_=QFileDialog.getSaveFileName(self.centralWidget,'选择保存位置','./','Image Files(*.png *.jpg *.bmp)')
+        if output_path:
+            self.save(output_path,self.temp_bgr)
+        else:
+            QMessageBox.warning(self.centralWidget,'无效路径','无效路径，请重新选择！')
+
+    def save(self,output_path,output_im):
+        cv2.imencode('.jpg',output_im)[1].tofile(output_path)
+
+    # hand sign prediction
+    def _handSignPrediction(self, hands):
         [x,y,w,h] = hands[0]['bbox']
-        
-        # get a suitable part or hand
-        if x-20 >= 0:
-            x1 = x-20
-        else:
-            x1 = 0
-        if x+w+20 <= 640:
-            x2 = x+w+20
-        else:
-            x2 = x+w
-        if y-20 >= 0:
-            y1 = y-20
-        else:
-            y1 = 0
-        if y+h+20 <= 480:
-            y2 = y+h+20
-        else:
-            y2 = 480
         
         if y < 0:
             y = 0
         if x < 0:
             x = 0
-        hand_array = frame[y:y+h,x:x+w,:]
+        hand_array = self.frame[y:y+h,x:x+w,:]
 
         # step 1. remove back ground
         new_hand_array = self.segmentor.removeBG(hand_array, (220,220,220), threshold=0.000001)
@@ -247,17 +271,10 @@ class SelfieHelper(object):
         self.hand_predictions.put(tempPrediction)
         print("hand_prediction: {0}".format(tempPrediction))
 
-    def _selfiePrediction(self, frame, bboxInfo):
-        # get bbox of body object
-
+    # selfie prediction
+    def _selfiePrediction(self, bboxInfo):
+        
         (body_x,body_y,body_w,body_h) = bboxInfo['bbox']
-
-        # calculate the proportion
-        self.body_proportion = (480-body_x)*(640-body_y)/(480*640)
-        if self.body_proportion > 1:
-            self.body_proportion = 1.0
-
-
         # condition of selfie detection: body_proportion more than 70%
         if self.body_proportion >= 0.7:
 
@@ -276,10 +293,10 @@ class SelfieHelper(object):
             else:
                 center_y2 = 480
             
-            body_array = frame[center_y1:center_y2,center_x-int(new_body_w/2):center_x+int(new_body_w/2),:]
+            self.body_array = self.frame[center_y1:center_y2,center_x-int(new_body_w/2):center_x+int(new_body_w/2),:]
 
             # step 1. resize to 256*256
-            new_body_array = np.resize(body_array, [256,256])
+            new_body_array = np.resize(self.body_array, [256,256])
             # step 2. transform to 256*256*3 
             new_body_array = np.stack((new_body_array,)*3, axis=-1)
             # step 3. reshape to 1*256*256*3
@@ -291,9 +308,15 @@ class SelfieHelper(object):
             self.selfie_prediction = predictions[0][0]
             if(self.selfie_prediction > 0.5):
                 self.predicted_action='Selfie'
+                self._countdownStart()
             else:
                 self.predicted_action='NonSelfie'
 
+        else:
+            self.selfie_prediction = 0.0
+            self.predicted_action='NonSelfie'
+
+    # check hand sign in nearly ten predictions
     def _checkSign(self):
         hand_signs = list(self.hand_predictions.queue)
         statistics = {'0':0,'1':0,'2':0,'3':0,'4':0,'5':0,'9':0,'10':0}
@@ -316,6 +339,20 @@ class SelfieHelper(object):
         else:
             return 'unknown'
 
+    # start countdown
+    def _countdownStart(self):
+            self.countdown = True
+            now = time.time()
+            self.end = now + 10
+            self.remaining = np.round(self.end - now, 1)
+
+    # stop countdown
+    def _countdownStop(self):
+            self.countdown = False
+            self.autoStart = False
+            self.remaining = 10
+
+    # open Camera
     def _openCamera(self):
         # get camera
         cap = cv2.VideoCapture(0)
@@ -324,53 +361,97 @@ class SelfieHelper(object):
             print("Cannot access camera!")
             exit()
 
+        self.path_img = 'camera'
         while True:
             # get a frame
             ret, frame = cap.read()
             if not ret:
                 print("Cannot receive frame!")
                 break
-            
-            """
-            # detect faces
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = self.faceCascade.detectMultiScale(
-                gray,
-                scaleFactor = 1.1, #比例因子
-                minNeighbors = 3,  #最小鄰距
-                minSize=(30, 30) #視窗大小
-            )
-            
-            # show border and information on face
-            for (x, y, w, h) in faces:
-                bbox_array = cv2.rectangle( frame, (x, y), (x+w, y+h), (255, 255, 0), 2)
-                cv2.putText(bbox_array, self.predicted_action + ", acc: " + str(self.selfie_prediction), (x, y -10 ), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
-                cv2.putText(bbox_array, "body rate: " + str(self.body_proportion), (x, y+h+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
-            """
+
+            self.frame = frame
             # detect hands
-            hands, img = self.handDetector.findHands(frame)
+            hands, img = self.handDetector.findHands(self.frame)
             # detect body
-            img = self.poseDetector.findPose(frame)
-            lmList, bboxInfo = self.poseDetector.findPosition(img, bboxWithHands=False)
+            if self.countdown == False:
+                img = self.poseDetector.findPose(self.frame, draw=False)
+                lmList, bboxInfo = self.poseDetector.findPosition(img, bboxWithHands=False)
+
             
-            # found hand!
+            ############################################ found hand! ###########################################
             if len(hands)>=1 :
-                self._handSignPrediction(frame, hands)
+                self._handSignPrediction(hands)
                 cv2.putText
                 for hand in hands:
                     [x,y,w,h] = hand['bbox']
-                    number = self._checkSign()
+                    self.number = self._checkSign()
                     #bbox_array = cv2.rectangle( frame, (x, y), (x+w, y+h), (255, 255, 0), 2)
-                    cv2.putText(frame, "Sign: " + number , (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+                    cv2.putText(self.frame, "Sign: " + self.number , (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
 
-            # found body!
-            if 'bbox' in bboxInfo:
-                self._selfiePrediction(frame, bboxInfo)
+            ############################################ found body! ###########################################
+            if 'bbox' in bboxInfo and self.predicted_action == 'NonSelfie' and self.autoStart == True:
+                # get bbox of body object
+                (body_x,body_y,body_w,body_h) = bboxInfo['bbox']
+                # calculate the proportion
+                self.body_proportion = (480-body_x)*(640-body_y)/(480*640)
+                if self.body_proportion > 1:
+                    self.body_proportion = 1.0
+                #if self.predicted_action == 'NonSelfie':
+                self._selfiePrediction(bboxInfo)
+                cv2.putText(self.frame, self.predicted_action + ", acc: " + str(self.selfie_prediction), (body_x, body_y -10 ), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                cv2.putText(self.frame, "body rate: " + str(self.body_proportion), (body_x, body_y +15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
             else:
                 self.body_proportion = 0.0
                 self.selfie_prediction = 0.0
-                self.predicted_action='NonSelfie'
-            cv2.imshow("Faces found",  frame)
+                #self.predicted_action='NonSelfie'
+            
+            ########################################### countdown timer ###########################################
+
+            if self.countdown == True:
+                now = time.time()
+                self.remaining = self.end - now
+                if self.remaining < 0:
+                    self._countdownStop()
+                    ret, frame = cap.read()
+                    self.frame = frame
+                    if self.number != 'unknown' :
+                        number = int(self.number)
+                        if number <= 5 and number >= 1:
+                            mode = self.mode[number-1]
+                            self._applyMakeup(mode)
+                            cv2.imwrite('./output/{0}.jpg'.format(self.imageCount), self.temp_bgr)
+                        else:
+                            cv2.imwrite('./output/{0}.jpg'.format(self.imageCount), self.frame)
+                    else:
+                        cv2.imwrite('./output/{0}.jpg'.format(self.imageCount), self.frame)
+                    self.imageCount += 1
+            
+            cv2.putText(self.frame, self.predicted_action , (0,20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+            cv2.putText(self.frame, "Timer: " + str(self.remaining), (0,35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+            cv2.putText(self.frame, "Auto Start: " + str(self.autoStart), (0,50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+            cv2.putText(self.frame, "Makeup Mode: " + str(self.number), (0,65), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+
+            ############################################ hand sign operation ###########################################
+            if self.number != 'unknown':
+                number = int(self.number)
+                if number <= 5 and number >= 1:
+                    mode = self.mode[number-1]
+                    self._applyMakeup(mode)
+                # stop taking selfie
+                elif number == 0:
+                    self._countdownStop()
+                    cv2.imshow("Faces found",  self.frame)
+                # start taking selfie
+                elif number == 9 and self.countdown == False:
+                    self._countdownStart()
+                    cv2.imshow("Faces found",  self.frame)
+                else:
+                    cv2.imshow("Faces found",  self.frame)
+                
+            else:
+                cv2.imshow("Faces found",  self.frame)
+
+            
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
@@ -378,7 +459,7 @@ class SelfieHelper(object):
         cap.release()
         cv2.destroyAllWindows()
 
-        
+    # setup UI
     def _setupUi(self):
         self.window.setObjectName("MainWindow")
         self.window.resize(837, 838)
@@ -408,7 +489,6 @@ class SelfieHelper(object):
         self.sl_whitening = QtWidgets.QSlider(self.centralWidget)
         self.sl_whitening.setOrientation(QtCore.Qt.Horizontal)
         self.sl_whitening.setObjectName("sl_whitening")
-        #### 
         self.sl_whitening.valueChanged.connect(self._changeValue)
         self.gridLayout.addWidget(self.sl_whitening, 0, 1, 1, 1)
         spacerItem = QtWidgets.QSpacerItem(40, 20, QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
@@ -420,7 +500,6 @@ class SelfieHelper(object):
         self.sl_smooth = QtWidgets.QSlider(self.centralWidget)
         self.sl_smooth.setOrientation(QtCore.Qt.Horizontal)
         self.sl_smooth.setObjectName("sl_smooth")
-        #### 
         self.sl_smooth.valueChanged.connect(self._changeValue)
         self.gridLayout.addWidget(self.sl_smooth, 1, 1, 1, 1)
         spacerItem1 = QtWidgets.QSpacerItem(40, 20, QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
@@ -432,7 +511,6 @@ class SelfieHelper(object):
         self.sl_sharpen = QtWidgets.QSlider(self.centralWidget)
         self.sl_sharpen.setOrientation(QtCore.Qt.Horizontal)
         self.sl_sharpen.setObjectName("sl_sharpen")
-        #### 
         self.sl_sharpen.valueChanged.connect(self._changeValue)
         self.gridLayout.addWidget(self.sl_sharpen, 2, 1, 1, 1)
         spacerItem2 = QtWidgets.QSpacerItem(40, 20, QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
@@ -444,7 +522,6 @@ class SelfieHelper(object):
         self.sl_brightening = QtWidgets.QSlider(self.centralWidget)
         self.sl_brightening.setOrientation(QtCore.Qt.Horizontal)
         self.sl_brightening.setObjectName("sl_brightening")
-        #### 
         self.sl_brightening.valueChanged.connect(self._changeValue)
         self.gridLayout.addWidget(self.sl_brightening, 3, 1, 1, 1)
         spacerItem3 = QtWidgets.QSpacerItem(40, 20, QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
@@ -458,6 +535,10 @@ class SelfieHelper(object):
         self.bt_reset = QtWidgets.QPushButton(self.centralWidget)
         self.bt_reset.setObjectName("bt_reset")
         self.gridLayout.addWidget(self.bt_reset, 4, 1, 1, 1)
+
+        self.bt_saveImage = QtWidgets.QPushButton(self.centralWidget)
+        self.bt_saveImage.setObjectName("bt_saveImage")
+        self.gridLayout.addWidget(self.bt_saveImage, 4, 2, 1, 1)
 
         self.bt_save1 = QtWidgets.QPushButton(self.centralWidget)
         self.bt_save1.setObjectName("bt_save1")
@@ -495,6 +576,7 @@ class SelfieHelper(object):
         self.window.setWindowTitle(_translate("MainWindow", "AI美顏"))
         self.bt_open.setText(_translate("MainWindow", "打開文件"))
         self.bt_reset.setText(_translate("MainWindow", "還原"))
+        self.bt_saveImage.setText(_translate("MainWindow", "保存照片"))
         self.bt_camera.setText(_translate("MainWindow", "開啟鏡頭"))
         self.bt_save1.setText(_translate("MainWindow", "保存至mode1"))
         self.bt_save2.setText(_translate("MainWindow", "保存至mode2"))
