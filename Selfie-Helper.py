@@ -11,6 +11,7 @@ from AIMakeup import Makeup,Face,Organ,NoFace
 # modules of models
 import tensorflow as tf
 import matplotlib.pyplot as plt
+from queue import Queue
 from cvzone.HandTrackingModule import HandDetector
 from cvzone.PoseModule import PoseDetector
 import keras.backend as K
@@ -59,10 +60,10 @@ class SelfieHelper(object):
         self.hand_model = tf.keras.models.load_model('./hand_model_new.h5')
 
         # predictions
-        self.hand_prediction = '10'
         self.selfie_prediction = 0.0
         self.predicted_action = 'NonSelfie'
         self.body_proportion = 0.0
+        self.hand_predictions = Queue(maxsize=10)
 
     def _set_connect(self):
         '''
@@ -212,7 +213,12 @@ class SelfieHelper(object):
         else:
             y2 = 480
         
+        if y < 0:
+            y = 0
+        if x < 0:
+            x = 0
         hand_array = frame[y:y+h,x:x+w,:]
+
         # step 1. remove back ground
         new_hand_array = self.segmentor.removeBG(hand_array, (220,220,220), threshold=0.000001)
         # step 2. transform to gray scale
@@ -234,11 +240,14 @@ class SelfieHelper(object):
         # step 7. predict
         X = np.array([new_hand_array])
         Y_pred = self.hand_model.predict(X)
-        self.hand_prediction = K.argmax(Y_pred,axis=-1)
-        self.hand_prediction = self.hand_prediction.numpy()[0].astype(str)
-        print("hand_prediction: {0}".format(self.hand_prediction))
+        tempPrediction = K.argmax(Y_pred,axis=-1)
+        tempPrediction = str(tempPrediction.numpy()[0])
+        if self.hand_predictions.full():
+            self.hand_predictions.get()
+        self.hand_predictions.put(tempPrediction)
+        print("hand_prediction: {0}".format(tempPrediction))
 
-    def _selfiePrediction(self, frame, bboxInfo, faces):
+    def _selfiePrediction(self, frame, bboxInfo):
         # get bbox of body object
 
         (body_x,body_y,body_w,body_h) = bboxInfo['bbox']
@@ -249,8 +258,8 @@ class SelfieHelper(object):
             self.body_proportion = 1.0
 
 
-        # condition of selfie detection: 1. body_proportion more than 70%   2. found face 
-        if self.body_proportion >= 0.7 and len(faces)!=0:
+        # condition of selfie detection: body_proportion more than 70%
+        if self.body_proportion >= 0.7:
 
             # get a suitable part or face
             new_body_w = int(body_w*0.5)
@@ -285,6 +294,27 @@ class SelfieHelper(object):
             else:
                 self.predicted_action='NonSelfie'
 
+    def _checkSign(self):
+        hand_signs = list(self.hand_predictions.queue)
+        statistics = {'0':0,'1':0,'2':0,'3':0,'4':0,'5':0,'9':0,'10':0}
+        for i in hand_signs:
+            statistics[i] += 1
+        if statistics['9'] >= 1:
+            return '9'
+        elif statistics['1'] >= 3:
+            return '1'
+        elif statistics['0'] >= 3:
+            return '0'
+        elif statistics['2'] >= 3:
+            return '2'
+        elif statistics['5'] >= 4:
+            return '5'
+        elif statistics['3'] >= 5:
+            return '3'
+        elif statistics['4'] >= 5:
+            return '4'
+        else:
+            return 'unknown'
 
     def _openCamera(self):
         # get camera
@@ -301,6 +331,7 @@ class SelfieHelper(object):
                 print("Cannot receive frame!")
                 break
             
+            """
             # detect faces
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             faces = self.faceCascade.detectMultiScale(
@@ -315,7 +346,7 @@ class SelfieHelper(object):
                 bbox_array = cv2.rectangle( frame, (x, y), (x+w, y+h), (255, 255, 0), 2)
                 cv2.putText(bbox_array, self.predicted_action + ", acc: " + str(self.selfie_prediction), (x, y -10 ), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
                 cv2.putText(bbox_array, "body rate: " + str(self.body_proportion), (x, y+h+20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
-            
+            """
             # detect hands
             hands, img = self.handDetector.findHands(frame)
             # detect body
@@ -325,10 +356,18 @@ class SelfieHelper(object):
             # found hand!
             if len(hands)>=1 :
                 self._handSignPrediction(frame, hands)
+                cv2.putText
+                for hand in hands:
+                    [x,y,w,h] = hand['bbox']
+                    number = self._checkSign()
+                    #bbox_array = cv2.rectangle( frame, (x, y), (x+w, y+h), (255, 255, 0), 2)
+                    cv2.putText(frame, "Sign: " + number , (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+
             # found body!
             if 'bbox' in bboxInfo:
-                self._selfiePrediction(frame, bboxInfo, faces)
+                self._selfiePrediction(frame, bboxInfo)
             else:
+                self.body_proportion = 0.0
                 self.selfie_prediction = 0.0
                 self.predicted_action='NonSelfie'
             cv2.imshow("Faces found",  frame)
