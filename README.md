@@ -5,3 +5,22 @@
 - 可事先設定多種濾鏡，拍照時直接套用，減少了之後一張一張修圖的困擾
 - 使用AI makeup技術，免除修圖新手不擅長修圖之困擾
 - 可透過特定手勢自動開始/終止自拍
+
+## 實作步驟
+- 尋找selfie dataset並訓練出selfie detection model
+- 尋找hand sign dataset並訓練出hand sign detection model
+- 使用opencv抓取鏡頭內照片
+- 使用cvzone之PostDetector抓取身體物件
+- 透過身體物件之數據計算出身體物件佔畫面之比例(在此稱body_rate)
+- 使用MTCNN的進行臉部偵測抓取臉部
+- 偵測到臉部以及body_rate符合則進行selfie detect，符合則倒數自拍
+- 使用cvzone之HandDetector抓取手部物件
+- 在倒數階段，若手筆出特定數字之手勢，則可切換至該mode之濾鏡
+- 修改現成之AIMakeUp程式，透過實現臉部濾鏡套入MTCNN擷取出的臉部
+
+參考之AIMakeUp gitHub: https://github.com/QuantumLiu/AIMakeup
+
+## 操作概念
+- 使用者面向鏡頭，偵測到自拍動作後，自動倒數計時10秒，亦可透過手部動作控制倒數計時開始終止
+- 使用者在同時被抓捕到臉部以及手時，會配對最近距離之臉部手部視為同個人，偵測手部動作對該臉部套用對應手勢之濾鏡
+- 使用者可事先設定好數個客製化濾鏡
