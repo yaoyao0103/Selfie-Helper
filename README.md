@@ -13,7 +13,7 @@ In addition, combined with AI Makeup, custom filters can be implemented. Custom 
 
 ## Display
 
-### Original Picture(Left), the picture after applying filter(Right)
+### Original Image(Left), image applied filter(Right)
 ![image](https://github.com/yaoyao0103/Selfie-Helper/assets/76504560/1f048fe7-f247-40b9-86f9-1ced49f66803)
 
 ### Selfie is not detected(Left), selfie is detected and then start to count down, and detects gestures to apply filter No. 1 (Right)
