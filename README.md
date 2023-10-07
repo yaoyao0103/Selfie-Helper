@@ -1,26 +1,41 @@
-## 動機
-- 取代自拍時需手動設定倒數計時的困擾
-- 出門前自拍棒總會忘記充電，在旅程中自拍棒沒電會造成困擾，透過自拍偵測即不須任何操作即可倒數拍照
-- 拍照前選擇濾鏡總需動手襙控選擇很久，選完濾鏡後實際套用到臉上可能也不一定合適，又要重新選。此系統實現預先設定幾種自己常用的濾鏡，鏡頭直接面對臉部下可直接透過手部姿勢來更換預設的濾鏡，省去不少困擾
-- 可事先設定多種濾鏡，拍照時直接套用，減少了之後一張一張修圖的困擾
-- 使用AI makeup技術，免除修圖新手不擅長修圖之困擾
-- 可透過特定手勢自動開始/終止自拍
+## Introduction
+This system implements selfie detection to automatically count down the selfie, and combines gesture detection to switch custom filters. It reduces the manual operation of the device, allowing users to quickly switch filters and take selfies conveniently. It also combines CNN deep learning technology to implement selfie detection and hand posture detection models. The countdown starts when a selfie is detected. 
 
-## 實作步驟
-- 尋找selfie dataset並訓練出selfie detection model
-- 尋找hand sign dataset並訓練出hand sign detection model
-- 使用opencv抓取鏡頭內照片
-- 使用cvzone之PostDetector抓取身體物件
-- 透過身體物件之數據計算出身體物件佔畫面之比例(在此稱body_rate)
-- 使用MTCNN的進行臉部偵測抓取臉部
-- 偵測到臉部以及body_rate符合則進行selfie detect，符合則倒數自拍
-- 使用cvzone之HandDetector抓取手部物件
-- 在倒數階段，若手筆出特定數字之手勢，則可切換至該mode之濾鏡
-- 修改現成之AIMakeUp程式，透過實現臉部濾鏡套入MTCNN擷取出的臉部
+In addition, combined with AI Makeup, custom filters can be implemented. Custom filters can be switched through gestures in the camera, and specific gestures can be used to start or end selfies.
 
-參考之AIMakeUp gitHub: https://github.com/QuantumLiu/AIMakeup
+## Motivation
+- Replaces the trouble of manually setting the countdown when taking a selfie
+- I always forget to charge my selfie stick before going out. If the selfie stick runs out of battery during the journey, it will cause trouble. Through selfie detection, I can count down and take pictures without any operation.
+- Selecting a filter before taking a photo always requires manual control for a long time. After selecting the filter, it may not be suitable for the actual application on the face, and you have to select it again. This system allows you to preset several commonly used filters. When the lens is directly facing your face, you can change the preset filters directly through hand gestures, saving you a lot of trouble.
+- You can set a variety of filters in advance and apply them directly when taking pictures, which reduces the trouble of retouching pictures one by one later.
+- Use AI makeup technology to avoid the trouble of novice photo retouchers who are not good at photo retouching.
+- Automatically start/stop taking selfies through specific gestures.
 
-## 操作概念
-- 使用者面向鏡頭，偵測到自拍動作後，自動倒數計時10秒，亦可透過手部動作控制倒數計時開始終止
-- 使用者在同時被抓捕到臉部以及手時，會配對最近距離之臉部手部視為同個人，偵測手部動作對該臉部套用對應手勢之濾鏡
-- 使用者可事先設定好數個客製化濾鏡
+## Display
+
+### Original Picture(Left), the picture after applying filter(Right)
+![image](https://github.com/yaoyao0103/Selfie-Helper/assets/76504560/1f048fe7-f247-40b9-86f9-1ced49f66803)
+
+### Selfie is not detected(Left), selfie is detected and then start to count down, and detects gestures to apply filter No. 1 (Right)
+![image](https://github.com/yaoyao0103/Selfie-Helper/assets/76504560/89400437-f5b4-403b-a552-8af2eb6aa231)
+
+
+## Implementation Steps
+- Find selfie dataset and train selfie detection model.
+- Find hand sign dataset and train hand sign detection model.
+- Use opencv to capture photos within the lens.
+- Use cvzone's PostDetector to capture body objects.
+- Calculate the proportion of body objects in the screen through the data of body objects (called body_rate here).
+- Use MTCNN for face detection and capture faces.
+- If the detected face and body_rate match, selfie detect will be performed. If they match, the selfie will be counted down.
+- Use cvzone's HandDetector to capture hand objects.
+- During the countdown stage, if you make a gesture with a specific number, you can switch to the filter of that mode.
+- Modify the ready-made AIMakeUp program to apply facial filters to the faces captured by MTCNN.
+
+## Reference
+- AIMakeUp GitHub: https://github.com/QuantumLiu/AIMakeup
+
+## Usage
+- When the user faces the camera and detects the Selfie action, it will automatically count down for 10 seconds. The countdown can also be controlled by hand movements to start and end the countdown.
+- When the user's face and hands are captured at the same time, the closest face and hands will be matched as the same person, and the hand movements will be detected and the corresponding gesture filter will be applied to the face.
+- Users can set several customized filters in advance.
